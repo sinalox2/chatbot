@@ -7,7 +7,7 @@ import openai
 load_dotenv()
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-app = Flask(__name__)
+app = Flask(__name__)  # <-- ESTA LÍNEA ES CLAVE
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
@@ -22,23 +22,28 @@ def whatsapp_reply():
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Enviar mensaje a GPT-4o
     try:
         completion = openai.ChatCompletion.create(
             model="gpt-4o",
             messages=[
-                {"role": "system", "content": "Eres un asesor virtual de Nissan que contesta dudas sobre autos nuevos, seminuevos y planes de financiamiento como SICREA. Sé claro, amable y directo."},
+                {
+                    "role": "system",
+                    "content": (
+                        "Eres un asistente virtual de Nissan que atiende clientes por WhatsApp. "
+                        "Tu tarea es responder preguntas sobre autos nuevos, seminuevos, enganches, buró de crédito, "
+                        "planes como SICREA, precios, requisitos y tiempos de entrega. "
+                        "Sé claro, profesional, empático y busca resolver sus dudas o invitarlos a agendar cita."
+                    )
+                },
                 {"role": "user", "content": incoming_msg}
             ]
         )
         respuesta = completion.choices[0].message["content"].strip()
-        print("Respuesta de GPT:", respuesta)
     except Exception as e:
-        print("❌ Error al llamar a OpenAI:", e)
-        respuesta = "Lo siento, tuve un problema técnico al procesar tu mensaje. Intenta más tarde."
+        print("❌ Error al generar respuesta:", e)
+        respuesta = "Lo siento, tuvimos un problema técnico al procesar tu mensaje. Intenta nuevamente más tarde."
 
     msg.body(respuesta)
-
     return str(resp)
 
 if __name__ == "__main__":
