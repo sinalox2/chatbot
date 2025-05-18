@@ -2,16 +2,13 @@ from langchain.vectorstores import FAISS
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.docstore.document import Document
 
-# Cargar la base vectorial previamente guardada
-def cargar_vectorstore():
-    embeddings = OpenAIEmbeddings()
-    db = FAISS.load_local("rag/vector_db_sicrea", embeddings, allow_dangerous_deserialization=True)
-    return db
+# Inicializar la base vectorial una sola vez
+embeddings = OpenAIEmbeddings()
+vectorstore = FAISS.load_local("rag/vector_db_sicrea", embeddings, allow_dangerous_deserialization=True)
 
 # Recuperar contexto relevante dado un mensaje de usuario
 def recuperar_contexto(pregunta_usuario, k=3):
-    db = cargar_vectorstore()
-    documentos_similares = db.similarity_search(pregunta_usuario, k=k)
+    documentos_similares = vectorstore.similarity_search(pregunta_usuario, k=k)
     
     # Combinar el contenido en un solo string
     contexto = "\n".join([doc.page_content for doc in documentos_similares])
