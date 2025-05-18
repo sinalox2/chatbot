@@ -1,19 +1,29 @@
 import sys
+import json
 sys.path.append(".")
 from flask import Flask, request, Response
 from twilio.twiml.messaging_response import MessagingResponse
 import os
 from dotenv import load_dotenv
+from pymongo import MongoClient
 import openai
 from rag.buscador import recuperar_contexto
 import csv
 from datetime import datetime
 
 load_dotenv()
+client_mongo = MongoClient(os.getenv("MONGODB_URI"))
+db = client_mongo["chatbot_nissan"]
+coleccion_leads = db["leads"]
 openai.api_key = os.getenv("OPENAI_API_KEY")
 client = openai
 
 app = Flask(__name__)  # <-- ESTA LÍNEA ES CLAVE
+
+conversaciones = {}
+
+with open("prompt_sistema_nissan.txt", "r", encoding="utf-8") as f:
+    prompt_sistema = f.read()
 
 @app.route("/whatsapp", methods=["POST"])
 def whatsapp_reply():
@@ -23,6 +33,12 @@ def whatsapp_reply():
     print(request.form)
 
     incoming_msg = request.values.get("Body", "").lower()
+    wa_id = request.values.get("WaId", "")
+    if wa_id not in conversaciones:
+        conversaciones[wa_id] = []
+
+    conversaciones[wa_id].append({"role": "user", "content": incoming_msg})
+
     print(f"Mensaje entrante: {incoming_msg}")
 
     # Flujo directo sin intenciones
@@ -30,39 +46,58 @@ def whatsapp_reply():
     resp = MessagingResponse()
 
     try:
-        contexto = recuperar_contexto(incoming_msg)
+        mensajes = [
+            {
+                "role": "system",
+                "content": prompt_sistema
+            },
+            {
+                "role": "user",
+                "content": f"Información útil:\n{recuperar_contexto(incoming_msg)}"
+            }
+        ] + conversaciones[wa_id][-6:]  # últimos turnos
+
         completion = client.ChatCompletion.create(
             model="gpt-4o",
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Eres un asesor virtual de Nissan. Tu objetivo es responder de forma breve, clara y útil a los clientes interesados en autos nuevos o seminuevos. "
-                        "Evita dar explicaciones largas o demasiado técnicas. Sé profesional, amable y directo al punto. Usa emojis solo si ayudan a simplificar o hacer más amigable el mensaje, sin abusar. "
-                        "No repitas información ya dicha."
-                        "Si te preguntan quien es tu creador tu les vas a respondes que es Cesar Arias el master sicrea xd full hd 4k."
-                    )
-                },
-                {
-                    "role": "user",
-                    "content": f"Información útil:\n{contexto}\n\nPregunta del cliente:\n{incoming_msg}"
-                }
-            ]
+            messages=mensajes
         )
         respuesta = completion.choices[0].message.content.strip()
+        conversaciones[wa_id].append({"role": "assistant", "content": respuesta})
         print(f"Respuesta generada por GPT: {respuesta}")
     except Exception as e:
         print("❌ Error al generar respuesta:", e)
         respuesta = "Lo siento, tuvimos un problema técnico al procesar tu mensaje. Intenta nuevamente más tarde."
+    # Extraer datos del mensaje usando GPT
+    try:
+        extraccion = client.ChatCompletion.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": "Extrae del siguiente mensaje los siguientes datos si están presentes: modelo, enganche, buro y ingresos. Devuelve un JSON con las claves: modelo, enganche, buro, ingresos. Si no hay datos, usa null."},
+                {"role": "user", "content": incoming_msg}
+            ]
+        )
+        datos_extraidos = json.loads(extraccion.choices[0].message.content.strip())
+    except Exception as e:
+        print("⚠️ No se pudieron extraer datos del lead:", e)
+        datos_extraidos = {"modelo": None, "enganche": None, "buro": None, "ingresos": None}
 
     lead = {
         "fecha": datetime.now().isoformat(),
-        "wa_id": request.values.get("WaId", ""),
+        "wa_id": wa_id,
         "nombre": request.values.get("ProfileName", ""),
         "mensaje": incoming_msg,
-        "respuesta": respuesta
+        "respuesta": respuesta,
+        "modelo": datos_extraidos.get("modelo"),
+        "enganche": datos_extraidos.get("enganche"),
+        "buro": datos_extraidos.get("buro"),
+        "ingresos": datos_extraidos.get("ingresos")
     }
     guardar_lead_en_csv(lead)
+    try:
+        coleccion_leads.insert_one(lead)
+        print("✅ Lead guardado en MongoDB Atlas.")
+    except Exception as err:
+        print("❌ Error al guardar en MongoDB:", err)
 
     respuesta = respuesta.strip() if respuesta else "Disculpa, hubo un error al generar respuesta."
     resp.message(respuesta)
@@ -71,7 +106,7 @@ def whatsapp_reply():
 
 def guardar_lead_en_csv(lead_data):
     archivo = "leads.csv"
-    campos = ["fecha", "wa_id", "nombre", "mensaje", "respuesta"]
+    campos = ["fecha", "wa_id", "nombre", "mensaje", "respuesta", "modelo", "enganche", "buro", "ingresos"]
     existe = os.path.isfile(archivo)
 
     with open(archivo, mode="a", newline="", encoding="utf-8") as f:
